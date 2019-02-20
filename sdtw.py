@@ -230,19 +230,21 @@ class MatrixDiagonalIndexIterator:
     Custom iterator class to return successive diagonal indices of a matrix
     '''
     
-    def __init__(self, m, n, k_start=0):
+    def __init__(self, m, n, k_start=0, bandwidth=None):
         '''
-        __init__(self, m, n, k_start=0):
+        __init__(self, m, n, k_start=0, bandwidth=None):
         
         Arguments:
-            m (int)       : number of rows in matrix
-            n (int)       : number of columns in matrix
-            k_start (int) : (k_start, k_start) index to begin from
+            m (int)         : number of rows in matrix
+            n (int)         : number of columns in matrix
+            k_start (int)   : (k_start, k_start) index to begin from
+            bandwidth (int) : bandwidth to constrain indices within
         '''
-        self.m = m
-        self.n = n
-        self.k = k_start
-        self.k_max = self.m + self.n - k_start
+        self.m         = m
+        self.n         = n
+        self.k         = k_start
+        self.k_max     = self.m + self.n - k_start - 1
+        self.bandwidth = bandwidth
         
     def __iter__(self):
         return self
@@ -250,7 +252,7 @@ class MatrixDiagonalIndexIterator:
     def __next__(self):
         if hasattr(self, 'i') and hasattr(self, 'j'):
             
-            if self.k == self.k_max-1:
+            if self.k == self.k_max:
                 raise StopIteration
             
             elif self.k < self.m and self.k < self.n:
@@ -278,4 +280,13 @@ class MatrixDiagonalIndexIterator:
             self.j = [self.k]
             self.k+=1
         
-        return self.i.copy(), self.j.copy()
+        if bandwidth:
+            i_scb, j_scb = sakoe_chiba_band(self.i.copy(), self.j.copy(), self.m, self.n, bandwidth)
+            return i_scb, j_scb
+        else:
+            return self.i.copy(), self.j.copy()
+    
+def sakoe_chiba_band(i_list, j_list, m, n, bandwidth=1):
+    i_scb, j_scb = zip(*[(i, j) for i,j in zip(i_list, j_list) 
+                         if abs(2*(i*(n-1) - j*(m-1))) < max(m, n)*(bandwidth+1)])
+    return list(i_scb), list(j_scb)
