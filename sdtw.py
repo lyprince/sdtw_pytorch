@@ -12,7 +12,7 @@ class SoftDTWLoss(torch.nn.Module):
     https://arxiv.org/abs/1703.01541.
     '''
     
-    def __init__(self, gamma=1.0, spatial_independent=False):
+    def __init__(self, gamma=1.0, spatial_independent=False, bandwidth=None):
         '''
         __init__(self, gamma=1.0, spatial_independent=False):
         
@@ -24,12 +24,14 @@ class SoftDTWLoss(torch.nn.Module):
                                          x_i,t. This is a short-cut for creating a 'false' singular spatial dimension such
                                          that data can continue to be treated as a 3-tensor of size (batch x space x time).
                                          TODO: implement for arbitrary spatial dimensions.
+            bandwidth (int) : apply Sakoe-Chiba constraint
         '''
         
         super(SoftDTWLoss, self).__init__()
         
-        self.gamma = gamma
+        self.gamma               = gamma
         self.spatial_independent = spatial_independent
+        self.bandwidth           = bandwidth
         
     def forward(self, x, y):
         '''
@@ -43,7 +45,7 @@ class SoftDTWLoss(torch.nn.Module):
             loss (torch.Tensor): Loss for each data point in batch. Size = batch_dim
         '''
         
-        return SoftDTWLossFunction.apply(x, y, self.gamma, self.spatial_independent)
+        return SoftDTWLossFunction.apply(x, y, (self.gamma, self.spatial_independent, self.bandwidth))
 
 class SoftDTWLossFunction(torch.autograd.Function):
     '''
@@ -54,11 +56,11 @@ class SoftDTWLossFunction(torch.autograd.Function):
     '''    
     
     @staticmethod
-    def forward(ctx, x, y, gamma=1.0, spatial_independent=False):
+    def forward(ctx, x, y, params):
         
         '''
         @staticmethod
-        forward(ctx, x, y, gamma=1.0, spatial_independent=False):
+        forward(ctx, x, y, params):
         
         Compute the forward pass for Soft-DTW, storing intermediate alignment costs R, and Squared Euclidean
         Distance costs D for use in the backward pass. See algorithm 1 in https://arxiv.org/abs/1703.01541
@@ -67,16 +69,17 @@ class SoftDTWLossFunction(torch.autograd.Function):
             ctx : context
             x (torch.Tensor) : tensor of dimensions (batch_dim x space_dim x x_time_dim)
             y (torch.Tensor) : tensor of dimensions (batch_dim x space_dim x y_time_dim)
-            gamma (float) : smoothing parameter (TODO: find a way to remove this as an argument)
-            spatial_independent (bool): treat spatial dimension as independent (TODO: find a way to remove)
             
         Returns:
             SoftDTW_Loss (torch.Tensor)
         '''
         
         # Store parameters in context variable
+        
+        gamma, spatial_independent, bandwidth = params
         ctx.gamma = gamma
         ctx.spatial_independent = spatial_independent
+        ctx.bandwidth = bandwidth
         
         # Determine device and store in context variable
         ctx.device = 'cuda' if x.is_cuda else 'cpu'
@@ -117,20 +120,20 @@ class SoftDTWLossFunction(torch.autograd.Function):
         
         # Create Gram Matrices
         D = torch.zeros(D_dims).to(ctx.device)
-        R = torch.zeros(R_dims).to(ctx.device)
+        R = torch.ones(R_dims).to(ctx.device)*inf
         
         from math import inf
         
         # Initialize edges of Soft-DTW Gram Matrix
-        R[:, 0, 1:] = inf
-        R[:, 1:, 0] = inf
+        R[:, 0, 0]  = 0
         
         niters = x_time_dim + y_time_dim + 2
         
         # Sweep diagonally through Gram Matrices to compute alignment costs. 
         # See https://towardsdatascience.com/gpu-optimized-dynamic-programming-8d5ba3d7064f for inspiration
-        for (i,j),(ip1,jp1) in zip(MatrixDiagonalIndexIterator(m = x_time_dim, n = y_time_dim),
-                                   MatrixDiagonalIndexIterator(m = x_time_dim + 1, n= y_time_dim + 1, k_start=1)):
+        for (i,j),(ip1,jp1) in zip(MatrixDiagonalIndexIterator(m = x_time_dim, n = y_time_dim, bandwidth=bandwidth),
+                                   MatrixDiagonalIndexIterator(m = x_time_dim + 1, n= y_time_dim + 1, k_start=1,
+                                                               bandwidth=bandwidth)):
             
             # Compute Squared Euclidean Distance
             if spatial_independent:
@@ -168,13 +171,14 @@ class SoftDTWLossFunction(torch.autograd.Function):
         E[:, -1, -1] = 1
         
         from math import inf
-        ctx.R[:, :-1,  -1] = -inf
-        ctx.R[:,  -1, :-1] = -inf
+        ctx.R[torch.isinf(ctx.R)] = -inf
         ctx.R[:,  -1,  -1] = ctx.R[:, -2, -2]
         
-        rev_idxs   = reversed(list(MatrixDiagonalIndexIterator(ctx.x_time_dim,     ctx.y_time_dim)))
-        rev_idxsp1 = reversed(list(MatrixDiagonalIndexIterator(ctx.x_time_dim + 1, ctx.y_time_dim + 1, k_start = 1)))
-        rev_idxsp2 = reversed(list(MatrixDiagonalIndexIterator(ctx.x_time_dim + 2, ctx.y_time_dim + 2, k_start = 2)))
+        rev_idxs   = reversed(list(MatrixDiagonalIndexIterator(ctx.x_time_dim,     ctx.y_time_dim, bandwidth=ctx.bandwidth)))
+        rev_idxsp1 = reversed(list(MatrixDiagonalIndexIterator(ctx.x_time_dim + 1, ctx.y_time_dim + 1,
+                                                               k_start = 1, bandwidth=ctx.bandwidth)))
+        rev_idxsp2 = reversed(list(MatrixDiagonalIndexIterator(ctx.x_time_dim + 2, ctx.y_time_dim + 2,
+                                                               k_start = 2, bandwidth=ctx.bandwidth)))
         
         # Sweep diagonally through alignment gradient matrix
         for (i,j),(ip1,jp1),(ip2,jp2) in zip(rev_idxs, rev_idxsp1, rev_idxsp2):
@@ -191,7 +195,7 @@ class SoftDTWLossFunction(torch.autograd.Function):
             G = jacobean_product_squared_euclidean(x, y, E[:, 1:-1, 1:-1].permute(0, 2, 1))
         
         # Must return as many outputs as inputs to forward function
-        return G, None, None, None, None
+        return G, None, None,
     
 def softmin(x, gamma):
     '''
