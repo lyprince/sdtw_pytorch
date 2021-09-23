@@ -6,3 +6,7 @@ Here is my implementation of the Soft Dynamic Time Warping loss function describ
 Currently I have only a 'naive' implementation without extending the fast cython implementation in 
 https://github.com/mblondel/soft-dtw to incorporate a batch dimension. If I continue to use this in my line of
 research I may implement a cython / CUDA version to increase speed.
+
+#######
+See: https://github.com/Maghoumi/pytorch-softdtw-cuda for a ***much*** better implementation
+#######
